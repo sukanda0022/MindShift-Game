@@ -58,7 +58,10 @@ let gameInterval = null;
 let lastHeartbeat = Date.now();
 let heartbeatTimer;
 let isActuallyAway = false; 
-let isSystemFrozen = false; // เพิ่มตัวแปรเช็คสถานะระบบแช่แข็ง (ปิดจอ)
+let isSystemFrozen = false; 
+
+// ✨ [ตัวแปรป้องกันคะแนนถูกทับขณะบันทึก] ✨
+let isSaving = false; 
 
 // ✨ [อัปเดตสถานะแอดมิน] ✨
 function updateOnlineStatus(status) {
@@ -164,7 +167,8 @@ export function updateBackground() {
 
 // --- 6. ระบบบันทึกข้อมูลไป Firebase ---
 async function saveUserData() {
-    if (!userId) return;
+    if (!userId || isSaving) return;
+    isSaving = true; // ล็อคสถานะการบันทึก
     try {
         const timestamp = Date.now();
         const userRef = doc(db, "students", userId);
@@ -186,8 +190,12 @@ async function saveUserData() {
         });
 
         localStorage.setItem("localLastUpdate", timestamp.toString());
+        console.log("💾 Saved Score:", score);
     } catch (error) {
         console.error("Firebase Save Error:", error);
+    } finally {
+        // ปลดล็อคหลังจากบันทึกเสร็จเล็กน้อยเพื่อให้ Snapshot นิ่ง
+        setTimeout(() => { isSaving = false; }, 800);
     }
 }
 
@@ -244,25 +252,23 @@ export async function initGame() {
     updateOnlineStatus("online");
 
     onSnapshot(doc(db, "students", userId), (docSnap) => {
-        if (!docSnap.exists()) {
-            localStorage.clear();
-            alert("บัญชีของคุณถูกรีเซ็ตหรือถูกลบ กรุณาล็อกอินใหม่");
-            window.location.href = 'index.html';
-            return;
-        }
+        // ✨ [Logic แก้คะแนนลด]: ถ้ากำลังบันทึก (isSaving) ห้ามดึงข้อมูลมาทับเด็ดขาด ✨
+        if (!docSnap.exists() || isSaving) return;
 
         const data = docSnap.data();
-        score = data.points || 0;
         const serverTime = data.lastUpdate || 0;
         const localTime = parseInt(localStorage.getItem("localLastUpdate") || "0");
 
+        // อัปเดตข้อมูลในเครื่องเฉพาะเมื่อ Server มีข้อมูลที่ใหม่กว่าจริงๆ เท่านั้น
         if (serverTime > localTime) {
+            score = data.points || 0;
             currentSkin = data.currentSkin || "default";
             currentBG = data.currentBG || "classroom.jpg";
             totalFocusSeconds = data.stats?.focusSeconds || 0;
             tabSwitchCount = data.stats?.switches || 0;
             periodScores = data.stats?.history || [];
             localStorage.setItem("localLastUpdate", serverTime.toString());
+            console.log("☁️ Synced Score from Cloud:", score);
         }
 
         const lobbyNameEl = document.getElementById('lobby-name');
@@ -314,11 +320,10 @@ function startGameLoop() {
 
 // --- [⭐ ส่วนการจัดการ Visibility & OS Freeze (ฉบับสมบูรณ์) ⭐] ---
 
-// ตรวจจับสัญญาณปิดจอ (Frozen) จากระบบปฏิบัติการมือถือ
 window.addEventListener('freeze', () => {
     isSystemFrozen = true;
     isActuallyAway = false;
-    updateOnlineStatus("online"); // สั่ง Online ทันทีที่จอดับ เพื่อให้แอดมินเห็น
+    updateOnlineStatus("online"); 
     console.log("❄️ [OS Freeze] ปิดหน้าจอ -> บังคับสถานะ Online");
 });
 
@@ -335,21 +340,16 @@ document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
         localStorage.setItem("lastExitTime", now.toString());
         
-        // รอเสี้ยววินาทีเพื่อเช็คว่า OS สั่ง Frozen หรือไม่
         setTimeout(() => {
             if (isSystemFrozen) {
-                // เคส: ปิดหน้าจอ (ระบบจะ Freeze แอป)
                 isActuallyAway = false;
                 updateOnlineStatus("online"); 
-                console.log("😴 ผลสรุป: แค่ปิดจอ (ให้แอดมินเห็น Online)");
             } else {
-                // เคส: สลับแอป (ระบบไม่ Freeze แอปทันทีในจังหวะสลับ)
                 isActuallyAway = true;
                 isSleeping = true; 
                 tabSwitchCount++;
                 updateOnlineStatus("away");
                 updateImage();
-                console.log("🚫 ผลสรุป: สลับแอป (ให้แอดมินเห็น Away)");
             }
             saveUserData();
         }, 150);
@@ -361,8 +361,6 @@ document.addEventListener('visibilitychange', () => {
         saveUserData();
     }
 });
-
-// --- [ฟังก์ชันที่เหลือคงเดิม] ---
 
 async function handleEnergyDepleted() {
     if (!hasFailedPeriod && !isBreakMode) {
