@@ -55,10 +55,10 @@ let totalFocusSeconds = 0;
 let gameInterval = null;
 
 // --- [⭐ ตัวแปรควบคุมขั้นสูงสำหรับการแยกแยะจอดับ ⭐] ---
-let loopCheck;
 let lastHeartbeat = Date.now();
 let heartbeatTimer;
-let isActuallyAway = false; // ตัวตัดสิน: true = สลับแอป (หักคะแนน), false = ปิดจอ (ไม่หัก)
+let isActuallyAway = false; 
+let isSystemFrozen = false; // เพิ่มตัวแปรเช็คสถานะระบบแช่แข็ง (ปิดจอ)
 
 // ✨ [อัปเดตสถานะแอดมิน] ✨
 function updateOnlineStatus(status) {
@@ -80,20 +80,16 @@ function handleBackgroundTime() {
         const diffSeconds = Math.floor((currentTime - parseFloat(lastExit)) / 1000);
 
         if (diffSeconds > 5) {
-            // ⭐ Logic ที่คุณต้องการ: หักพลังงานเฉพาะเมื่อ "สลับแอป" เท่านั้น
             if (isActuallyAway) {
                 const energyLost = diffSeconds * 1.5;
                 periodEnergy = Math.max(0, periodEnergy - energyLost);
                 console.log(`[Penalty] สลับแอปไป ${diffSeconds} วินาที หักพลังงาน ${energyLost.toFixed(1)}`);
             } else {
-                // ถ้าแค่จอดับ (isActuallyAway = false) หักแค่เวลาใน Timer แต่ "ไม่หักพลังงาน"
                 timeLeft = Math.max(0, timeLeft - diffSeconds);
                 console.log(`[Screen Wake] กลับมาจากจอดับ (${diffSeconds} วินาที) ไม่มีการหักพลังงาน ✨`);
             }
-
             updateUI();
             updateImage();
-
             if (periodEnergy <= 0) {
                 periodEnergy = 0;
                 handleEnergyDepleted();
@@ -249,16 +245,14 @@ export async function initGame() {
 
     onSnapshot(doc(db, "students", userId), (docSnap) => {
         if (!docSnap.exists()) {
-            console.error("🚫 ข้อมูลถูกลบโดยแอดมิน");
             localStorage.clear();
-            alert("บัญชีของคุณถูกรีเซ็ตหรือถูกลบ กรุณาล็อกอินใหม่เพื่อเริ่มรอบใหม่");
+            alert("บัญชีของคุณถูกรีเซ็ตหรือถูกลบ กรุณาล็อกอินใหม่");
             window.location.href = 'index.html';
             return;
         }
 
         const data = docSnap.data();
         score = data.points || 0;
-
         const serverTime = data.lastUpdate || 0;
         const localTime = parseInt(localStorage.getItem("localLastUpdate") || "0");
 
@@ -282,15 +276,14 @@ export async function initGame() {
     });
 
     showScreen('lobby-screen');
-    startHeartbeat(); // เริ่มต้นระบบ Heartbeat ตรวจสอบความแอคทีฟ
+    startHeartbeat();
 }
 
-// --- [⭐ ระบบ Heartbeat ป้องกันการสับสนตอนจอดับ ⭐] ---
 function startHeartbeat() {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(() => {
         lastHeartbeat = Date.now();
-    }, 500); // อัปเดตทุกครึ่งวินาที
+    }, 500);
 }
 
 function startGameLoop() {
@@ -301,7 +294,6 @@ function startGameLoop() {
         if (timeLeft > 0) {
             timeLeft--;
             if (!isBreakMode) {
-                // พลังงานลดเฉพาะเมื่อระบบตัดสินว่าเป็น "ตั้งใจสลับแอป" เท่านั้น
                 if (isActuallyAway) {
                     periodEnergy -= 1.5;
                     if (periodEnergy <= 0) {
@@ -320,7 +312,22 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [⭐ ส่วนการจัดการ Visibility (ฉบับแก้ไขเพื่อคนปิดจอ) ⭐] ---
+// --- [⭐ ส่วนการจัดการ Visibility & OS Freeze (ฉบับสมบูรณ์) ⭐] ---
+
+// ตรวจจับสัญญาณปิดจอ (Frozen) จากระบบปฏิบัติการมือถือ
+window.addEventListener('freeze', () => {
+    isSystemFrozen = true;
+    isActuallyAway = false;
+    updateOnlineStatus("online"); // สั่ง Online ทันทีที่จอดับ เพื่อให้แอดมินเห็น
+    console.log("❄️ [OS Freeze] ปิดหน้าจอ -> บังคับสถานะ Online");
+});
+
+window.addEventListener('resume', () => {
+    isSystemFrozen = false;
+    isActuallyAway = false;
+    updateOnlineStatus("online");
+    console.log("🔥 [OS Resume] เปิดหน้าจอ -> กลับมา Online");
+});
 
 document.addEventListener('visibilitychange', () => {
     const now = Date.now();
@@ -328,31 +335,34 @@ document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
         localStorage.setItem("lastExitTime", now.toString());
         
-        // 💡 หัวใจสำคัญ: เช็คว่า "ช่วงเวลาที่หายไป" กับ "ชีพจรล่าสุด" ห่างกันแค่ไหน
-        // ถ้าห่างกันเกิน 600ms แสดงว่าเบราว์เซอร์ถูก OS สั่งหยุด (กดปิดจอ)
-        // ถ้าห่างกันน้อยมาก (<600ms) แสดงว่าเบราว์เซอร์ยังทำงานปกติในวินาทีที่หายไป (ปัดแอป)
-        const gap = now - lastHeartbeat;
-
-        if (gap < 600) {
-            isActuallyAway = true; // ตัดสินว่าเป็น: สลับแอป
-            isSleeping = true; 
-            tabSwitchCount++;
-            updateOnlineStatus("away");
-            console.log("🚫 สถานะ: สลับแอป (Away) -> หักพลังงาน");
-        } else {
-            isActuallyAway = false; // ตัดสินว่าเป็น: แค่ปิดหน้าจอ
-            updateOnlineStatus("online"); 
-            console.log("😴 สถานะ: ปิดหน้าจอ (Online) -> ไม่หักพลังงาน");
-        }
-        saveUserData();
+        // รอเสี้ยววินาทีเพื่อเช็คว่า OS สั่ง Frozen หรือไม่
+        setTimeout(() => {
+            if (isSystemFrozen) {
+                // เคส: ปิดหน้าจอ (ระบบจะ Freeze แอป)
+                isActuallyAway = false;
+                updateOnlineStatus("online"); 
+                console.log("😴 ผลสรุป: แค่ปิดจอ (ให้แอดมินเห็น Online)");
+            } else {
+                // เคส: สลับแอป (ระบบไม่ Freeze แอปทันทีในจังหวะสลับ)
+                isActuallyAway = true;
+                isSleeping = true; 
+                tabSwitchCount++;
+                updateOnlineStatus("away");
+                updateImage();
+                console.log("🚫 ผลสรุป: สลับแอป (ให้แอดมินเห็น Away)");
+            }
+            saveUserData();
+        }, 150);
     } else {
         isSleeping = false;
-        handleBackgroundTime(); // จะเช็ค isActuallyAway จากตอนขาออก
+        handleBackgroundTime();
         updateOnlineStatus("online");
         updateImage();
         saveUserData();
     }
 });
+
+// --- [ฟังก์ชันที่เหลือคงเดิม] ---
 
 async function handleEnergyDepleted() {
     if (!hasFailedPeriod && !isBreakMode) {
