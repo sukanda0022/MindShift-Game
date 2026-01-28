@@ -59,6 +59,7 @@ async function updateOnlineStatus(status) {
     if (!userId) return;
     try {
         const userRef = doc(db, "students", userId);
+        // ใช้ updateDoc โดยตรงเพื่อให้ส่งข้อมูลเร็วที่สุด
         await updateDoc(userRef, {
             status: status,
             lastSeen: Date.now()
@@ -80,12 +81,11 @@ function handleBackgroundTime() {
         if (diffSeconds > 0) {
             timeLeft = Math.max(0, timeLeft - diffSeconds);
 
-            if (diffSeconds > 60) {
-                const energyLost = diffSeconds * 0.8;
+            // ปรับเกณฑ์: ถ้าหายไปเกิน 5 วินาที (สลับแอปไปมา) จะเริ่มหักพลังงาน
+            if (diffSeconds > 5) {
+                const energyLost = diffSeconds * 1.5; // หักตามจริงที่หายไป
                 periodEnergy = Math.max(0, periodEnergy - energyLost);
-                console.log(`[Sync Success] หายไปนานเกินไป (${diffSeconds} วินาที) หักพลังงาน ${energyLost.toFixed(1)}`);
-            } else {
-                console.log(`[Sync Success] กลับมาทันเวลา! (หายไป ${diffSeconds} วินาที) ไม่มีการลงโทษหักพลังงาน`);
+                console.log(`[Sync Success] หายไป ${diffSeconds} วินาที หักพลังงาน ${energyLost.toFixed(1)}`);
             }
 
             updateUI();
@@ -314,54 +314,55 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [⭐ ส่วนที่แก้ไขใหม่ล่าสุด: แยกแยะจอดับ VS สลับแอป (Away) ⭐] ---
-// --- [⭐ ส่วนที่แก้ไข: บังคับอัปเดต Firebase ทันทีที่สลับแอป ⭐] ---
+// --- [⭐ แก้ไข: การตรวจจับสถานะแบบ Instant ⭐] ---
 let isPageHidden = false;
-let blurTimeout = null;
 
 window.addEventListener('blur', () => {
-    // เมื่อปัดหน้าจอไปแอปอื่น (เช่น IG)
-    blurTimeout = setTimeout(async () => {
-        // ถ้าหน้าจอยังไม่ดับ (!document.hidden) แต่เว็บหลุดโฟกัส = สลับแอปแน่นอน
-        if (!document.hidden && !isBreakMode && gameInterval && !hasFailedPeriod) {
-            isSleeping = true;
-            tabSwitchCount++;
-            updateImage();
-
-            // 🚀 บรรทัดนี้คือจุดที่ขาดไป: ต้องสั่งส่งค่าไป Firebase ทันที!
-            await updateOnlineStatus("away");
-            console.log("🚫 สลับไปแอปอื่น: แจ้งแอดมินว่า Away แล้ว");
-        }
-    }, 1000); // หน่วง 1 วินาทีเพื่อเช็คว่าไม่ใช่การล็อคจอ
-});
-
-window.addEventListener('focus', async () => {
-    clearTimeout(blurTimeout);
-    isSleeping = false;
-    handleBackgroundTime();
-    updateImage();
-
-    // 🚀 กลับมาหน้าเว็บ: แจ้งแอดมินว่า Online ทันที
-    await updateOnlineStatus("online");
-    console.log("✅ กลับเข้าสู่เว็บ: Online");
-});
-
-document.addEventListener('visibilitychange', async () => {
-    if (document.hidden) {
-        // กรณี "จอดับ" หรือ "ล็อคจอ"
-        isPageHidden = true;
-        clearTimeout(blurTimeout); // ยกเลิกสถานะ Away ทันที
-        isSleeping = false;
+    // ทันทีที่ปัดจอ หรือสลับแอป (บังคับส่งทันทีเพื่อป้องกันโดน Freeze)
+    if (!document.hidden && !isBreakMode && gameInterval && !hasFailedPeriod) {
+        isSleeping = true; 
+        tabSwitchCount++;
+        
+        // บันทึกเวลาที่ออกทันทีลง Storage เพื่อใช้คำนวณคะแนนตอนกลับมา
         localStorage.setItem("lastExitTime", Date.now().toString());
+        
+        updateImage();
+        
+        // 🚀 ส่งข้อมูลไปที่ Firebase ทันทีแบบไม่รอ async/await
+        updateOnlineStatus("away"); 
+        saveUserData(); 
+        console.log("🚫 สลับแอป: บังคับส่ง Away และบันทึกเวลาออก");
+    }
+});
 
-        // 💤 แจ้งแอดมินว่า Online ปกติ (แค่จอดับ)
-        await updateOnlineStatus("online");
-        console.log("💤 จอดับ/ล็อคจอ: คงสถานะ Online");
+window.addEventListener('focus', () => {
+    isPageHidden = false;
+    isSleeping = false;
+    
+    // 🧮 คำนวณเวลาที่หายไปและหักคะแนนย้อนหลัง
+    handleBackgroundTime();
+    
+    updateImage();
+    
+    // 🚀 กลับมาปุ๊บ บังคับ Online ทันที
+    updateOnlineStatus("online");
+    saveUserData();
+    console.log("✅ กลับมาแล้ว: Online");
+});
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        isPageHidden = true;
+        // ถ้าเป็นการล็อคจอจริง (hidden) ให้ถือว่าเป็น Online ปกติแต่พักหน้าจอ
+        isSleeping = false; 
+        localStorage.setItem("lastExitTime", Date.now().toString());
+        updateOnlineStatus("online"); 
+        console.log("💤 สถานะ: จอดับ (มองเป็น Online)");
     } else {
         isPageHidden = false;
         isSleeping = false;
         handleBackgroundTime();
-        await updateOnlineStatus("online");
+        updateOnlineStatus("online");
     }
 });
 
