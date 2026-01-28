@@ -3,7 +3,7 @@ import { doc, getDoc, setDoc, updateDoc, onSnapshot } from "https://www.gstatic.
 // นำเข้าโมดูลกราฟที่เราแยกไฟล์ไว้
 import { renderStatsModal } from './stats-module.js';
 
-// --- [Asset & Sound Settings] ---
+// --- [Asset & Sound Settings - ปรับปรุงใหม่] ---
 const sounds = {
     tap: new Audio('sounds/tap.mp3'),
     confirm: new Audio('sounds/confirm.mp3'),
@@ -54,9 +54,6 @@ let periodScores = [];
 let tabSwitchCount = 0;
 let totalFocusSeconds = 0;
 let gameInterval = null;
-
-// --- [ใหม่: ตัวแปรเช็คสถานะสลับหน้าจอ] ---
-let isWindowBlurred = false; 
 
 // ✨ [อัปเดตสถานะ Online/Away ไปยัง Firebase] ✨
 async function updateOnlineStatus(status) {
@@ -189,6 +186,10 @@ async function saveUserData() {
                 history: periodScores
             },
             lastUpdate: timestamp
+        }).catch(async (error) => {
+            if (error.code === 'not-found') {
+                console.warn("⚠️ บัญชีนี้ไม่มีอยู่ในระบบแล้ว");
+            }
         });
 
         localStorage.setItem("localLastUpdate", timestamp.toString());
@@ -199,21 +200,35 @@ async function saveUserData() {
 
 // --- 7. ฟังก์ชันจัดการหน้าจอ ---
 function showScreen(screenId) {
-    document.getElementById('lobby-screen').style.setProperty('display', 'none', 'important');
-    document.getElementById('setup-screen').style.setProperty('display', 'none', 'important');
-    document.getElementById('main-game-area').style.display = 'none';
+    const lobby = document.getElementById('lobby-screen');
+    const setup = document.getElementById('setup-screen');
+    const mainGame = document.getElementById('main-game-area');
+
+    if (lobby) lobby.style.setProperty('display', 'none', 'important');
+    if (setup) setup.style.setProperty('display', 'none', 'important');
+    if (mainGame) mainGame.style.display = 'none';
 
     if (screenId === 'game') {
-        document.getElementById('main-game-area').style.display = 'block';
+        if (mainGame) mainGame.style.display = 'block';
     } else {
         const target = document.getElementById(screenId);
         if (target) target.style.setProperty('display', 'flex', 'important');
     }
 }
 
-window.showSetup = () => { playSound('tap'); showScreen('setup-screen'); };
-window.hideSetup = () => { playSound('tap'); showScreen('lobby-screen'); };
-window.logout = () => { if (confirm("ออกจากระบบใช่หรือไม่?")) window.location.href = 'index.html'; };
+window.showSetup = () => {
+    playSound('tap');
+    showScreen('setup-screen');
+};
+
+window.hideSetup = () => {
+    playSound('tap');
+    showScreen('lobby-screen');
+};
+
+window.logout = () => {
+    if (confirm("ออกจากระบบใช่หรือไม่?")) window.location.href = 'index.html';
+};
 
 window.selectDuration = (totalMinutes) => {
     playSound('confirm');
@@ -222,6 +237,7 @@ window.selectDuration = (totalMinutes) => {
     timeLeft = 1800;
     periodEnergy = 100;
     hasFailedPeriod = false;
+
     alert(`เริ่มคาบเรียน ${totalMinutes / 60} ชั่วโมง (แบ่งเป็น ${totalPeriods} ช่วง ช่วงละ 30 นาที)`);
     showScreen('game');
     startGameLoop();
@@ -231,17 +247,21 @@ window.selectDuration = (totalMinutes) => {
 // --- 8. ลูปเกมและการจัดการ UI ---
 export async function initGame() {
     if (!userId) { window.location.href = 'index.html'; return; }
+
     updateOnlineStatus("online");
 
     onSnapshot(doc(db, "students", userId), (docSnap) => {
         if (!docSnap.exists()) {
+            console.error("🚫 ข้อมูลถูกลบโดยแอดมิน");
             localStorage.clear();
-            alert("บัญชีของคุณถูกรีเซ็ตหรือถูกลบ");
+            alert("บัญชีของคุณถูกรีเซ็ตหรือถูกลบ กรุณาล็อกอินใหม่เพื่อเริ่มรอบใหม่");
             window.location.href = 'index.html';
             return;
         }
+
         const data = docSnap.data();
         score = data.points || 0;
+
         const serverTime = data.lastUpdate || 0;
         const localTime = parseInt(localStorage.getItem("localLastUpdate") || "0");
 
@@ -251,13 +271,15 @@ export async function initGame() {
             totalFocusSeconds = data.stats?.focusSeconds || 0;
             tabSwitchCount = data.stats?.switches || 0;
             periodScores = data.stats?.history || [];
+
             localStorage.setItem("localLastUpdate", serverTime.toString());
         }
 
-        const lName = document.getElementById('lobby-name');
-        const uDisplay = document.getElementById('user-display');
-        if (lName) lName.innerText = data.name || userName;
-        if (uDisplay) uDisplay.innerText = data.name || userName;
+        const lobbyNameEl = document.getElementById('lobby-name');
+        const userDisplayEl = document.getElementById('user-display');
+
+        if (lobbyNameEl) lobbyNameEl.innerText = data.name || userName;
+        if (userDisplayEl) userDisplayEl.innerText = data.name || userName;
 
         updatePointsUI();
         updateImage();
@@ -272,6 +294,7 @@ function startGameLoop() {
     if (gameInterval) clearInterval(gameInterval);
     gameInterval = setInterval(async () => {
         if (hasFailedPeriod) return;
+
         if (timeLeft > 0) {
             timeLeft--;
             if (!isBreakMode) {
@@ -293,37 +316,45 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [ส่วนที่แก้ไขใหม่ล่าสุด: แยกแยะ จอดับ VS สลับแอป อย่างเด็ดขาด] ---
+// --- [⭐ ส่วนสำคัญ: แก้ไขจอดับ = ออนไลน์, สลับแอป = ออฟไลน์ ⭐] ---
+
+let isActuallyBlurred = false; // ตัวแปรเช็คว่ามีการสลับแอปจริงๆ
 
 window.addEventListener('blur', () => {
     if (!isBreakMode && gameInterval && !hasFailedPeriod) {
-        isWindowBlurred = true; 
+        isActuallyBlurred = true; // ยืนยันว่ามีการกดสลับแอปหรือเปิดหน้าต่างอื่น
         isSleeping = true;
         tabSwitchCount++; 
         updateImage();
-        updateOnlineStatus("away"); // ฟ้องแอดมินเฉพาะเมื่อสลับแอป
-        console.log("🚫 สลับแอป: แจ้งแอดมินว่าออกจากหน้าจอ + เริ่มหักพลังงาน");
+        updateOnlineStatus("away"); // ฟ้องแอดมินทันที
+        console.log("🚫 สลับแอป (Blur): แจ้งแอดมินว่า Away");
     }
 });
 
 window.addEventListener('focus', () => {
-    isWindowBlurred = false;
+    isActuallyBlurred = false;
     isSleeping = false;
+    handleBackgroundTime();
     updateImage();
     updateOnlineStatus("online");
-    console.log("✅ กลับมาที่เกม: แจ้งแอดมินว่าออนไลน์");
+    console.log("✅ กลับเข้าสู่หน้าจอ (Focus): แจ้งแอดมินว่า Online");
 });
 
 document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
+        // บันทึกเวลาเพื่อคำนวณพลังงานย้อนหลัง
         localStorage.setItem("lastExitTime", Date.now().toString());
-        if (!isWindowBlurred) {
-            console.log("💤 จอดับ/ล็อคจอ: แอดมินจะยังเห็นว่า Online อยู่ (ไม่ลงโทษ)");
+        
+        // ถ้าจอดับแต่ไม่ได้กดสลับแอป (isActuallyBlurred เป็น false)
+        // เราจะไม่ส่ง Away เพื่อให้แอดมินเห็นว่าเขายังค้างหน้าจอนี้ไว้
+        if (!isActuallyBlurred) {
+            console.log("💤 จอดับ/ปิดจอ: รักษาพยาบาลสถานะออนไลน์ไว้ใน Firebase");
         }
     } else {
-        if (!isWindowBlurred) {
+        // เมื่อเปิดจอขึ้นมาใหม่ ถ้าไม่ได้อยู่ในสถานะสลับแอป ให้คำนวณเวลาที่หายไป
+        if (!isActuallyBlurred) {
             handleBackgroundTime();
-            console.log("🌞 เปิดจอปกติ: เช็คเวลาจอดับ");
+            console.log("🌞 เปิดจอ: คำนวณเวลาจอดับเสร็จสิ้น");
         }
     }
 });
@@ -332,16 +363,19 @@ function checkFocus() {
     requestAnimationFrame(checkFocus);
 }
 
-// --- [ฟังก์ชันจัดการตอนจบคาบและอื่นๆ] ---
-
 async function handleEnergyDepleted() {
     if (!hasFailedPeriod && !isBreakMode) {
         playSound('denied');
         hasFailedPeriod = true;
         const msg = document.getElementById('status-msg');
-        if (msg) { msg.innerText = "หลุดโฟกัสจนพลังหมด! ⚡"; msg.style.color = "#f44336"; }
+        if (msg) {
+            msg.innerText = "หลุดโฟกัสจนพลังหมด! ⚡";
+            msg.style.color = "#f44336";
+        }
+
         const resetBtn = document.getElementById('reset-btn');
         if (resetBtn) resetBtn.style.display = "block";
+
         if (score >= 5) score -= 5; else score = 0;
         await saveUserData();
         updatePointsUI();
@@ -352,12 +386,14 @@ async function handleEnergyDepleted() {
 async function handlePeriodEnd() {
     if (!isBreakMode) {
         periodScores.push(Math.floor(periodEnergy));
+
         if (periodEnergy > 50) {
             playSound('confirm');
             score += 10;
             await saveUserData();
             updatePointsUI();
         }
+
         if (currentPeriod < totalPeriods) {
             isBreakMode = true;
             timeLeft = 300;
@@ -377,7 +413,9 @@ async function handlePeriodEnd() {
         playSound('tap');
         alert(`🔔 เริ่มช่วงที่ ${currentPeriod}! กลับมาโฟกัสกันเถอะ`);
     }
-    updateImage(); updateBackground(); updateUI();
+    updateImage();
+    updateBackground();
+    updateUI();
 }
 
 window.restartSession = function () {
@@ -385,11 +423,18 @@ window.restartSession = function () {
     hasFailedPeriod = false;
     periodEnergy = 100;
     timeLeft = 1800;
+
     const msg = document.getElementById('status-msg');
-    if (msg) { msg.innerText = "กำลังใช้สมาธิ... ✨"; msg.style.color = "#4db6ac"; }
+    if (msg) {
+        msg.innerText = "กำลังใช้สมาธิ... ✨";
+        msg.style.color = "#4db6ac";
+    }
+
     const resetBtn = document.getElementById('reset-btn');
     if (resetBtn) resetBtn.style.display = "none";
-    updateImage(); updateUI();
+
+    updateImage();
+    updateUI();
 };
 
 function updateUI() {
@@ -399,19 +444,36 @@ function updateUI() {
     if (timerEl) timerEl.innerText = `${m}:${s < 10 ? '0' : ''}${s}`;
 
     const energyFill = document.getElementById('energy-fill');
+    const mainGameArea = document.getElementById('main-game-area');
+
     if (energyFill) {
         energyFill.style.width = `${periodEnergy}%`;
         energyFill.style.background = isBreakMode ? "#4fc3f7" : "linear-gradient(90deg, #4db6ac, #81c784)";
     }
+
+    if (isBreakMode) {
+        if (mainGameArea) mainGameArea.style.backgroundColor = "rgba(79, 195, 247, 0.15)";
+    } else {
+        if (mainGameArea) mainGameArea.style.backgroundColor = "transparent";
+    }
+
     const statusMsg = document.getElementById('status-msg');
     if (statusMsg && !hasFailedPeriod) {
-        statusMsg.innerText = isBreakMode ? `☕ ช่วงพักผ่อน (${currentPeriod}/${totalPeriods})` : `📚 ช่วงโฟกัส (${currentPeriod}/${totalPeriods})`;
+        statusMsg.innerText = isBreakMode
+            ? `☕ ช่วงพักผ่อน (${currentPeriod}/${totalPeriods})`
+            : `📚 ช่วงโฟกัส (${currentPeriod}/${totalPeriods})`;
     }
 }
 
 window.showStatistics = () => {
     playSound('tap');
-    renderStatsModal(periodScores, totalFocusSeconds, tabSwitchCount, userName, getCurrentLevel());
+    renderStatsModal(
+        periodScores,
+        totalFocusSeconds,
+        tabSwitchCount,
+        userName,
+        getCurrentLevel()
+    );
 };
 
 function showFinalSummary() {
@@ -419,14 +481,23 @@ function showFinalSummary() {
     alert(`🏁 จบการเรียนวันนี้!\n- โฟกัสเฉลี่ย: ${avgFocus.toFixed(2)}%\n- สลับหน้าจอรวม: ${tabSwitchCount} ครั้ง\n- แต้มปัจจุบัน: ${score} 💎`);
 }
 
-window.openShop = () => { playSound('tap'); updatePointsUI(); document.getElementById('shop-modal').style.display = 'flex'; switchShopTab('skins'); };
-window.closeShop = () => { playSound('tap'); document.getElementById('shop-modal').style.display = 'none'; };
+window.openShop = () => {
+    playSound('tap');
+    updatePointsUI();
+    document.getElementById('shop-modal').style.display = 'flex';
+    switchShopTab('skins');
+};
+
+window.closeShop = () => {
+    playSound('tap');
+    document.getElementById('shop-modal').style.display = 'none';
+};
 
 window.switchShopTab = (tab) => {
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
     const itemsList = document.querySelector('.items-list');
-    if (!itemsList) return;
-    itemsList.innerHTML = "";
+    if (itemsList) itemsList.innerHTML = "";
+
     let lv = getCurrentLevel();
     let shopLv = (lv === 'grad') ? '3' : lv;
 
@@ -466,7 +537,8 @@ window.selectItem = (name, price, imgSrc, type) => {
             alert("อัปเดตเรียบร้อย!");
             window.closeShop();
         } else { 
-            playSound('denied'); alert("แต้มไม่พอ!"); 
+            playSound('denied');
+            alert("แต้มไม่พอ!"); 
         }
     };
 };
@@ -480,19 +552,33 @@ window.processRedeem = async (cost) => {
             await saveUserData();
             updatePointsUI(); 
             playSound('confirm');
-            alert(`แลกรางวัลสำเร็จ! หักไป ${cost} แต้ม`);
-        } catch (error) { alert("เกิดข้อผิดพลาดในการเชื่อมต่อ"); }
-    } else { playSound('denied'); alert("แต้มไม่เพียงพอ"); }
-};
+            alert(`แลกรางวัลสำเร็จ! หักไป ${cost} แต้ม (คงเหลือ ${score} แต้ม)`);
+        } catch (error) {
+            console.error("Redeem Error:", error);
+            alert("เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล");
+        }
+    } else {
+        playSound('denied');
+        alert("แต้มของคุณไม่เพียงพอสำหรับการแลกรางวัลนี้");
+    }
+}
 
 export function updatePointsUI() {
-    const ids = ['pts', 'lobby-pts', 'shop-pts-balance', 'current-points', 'points-display'];
-    ids.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.innerText = score;
-    });
+    const ptsEl = document.getElementById('pts');
+    const lobbyPtsEl = document.getElementById('lobby-pts'); 
+    const shopPtsEl = document.getElementById('shop-pts-balance');
+    const currentPointsModal = document.getElementById('current-points');
+    const pointsDisplayHUD = document.getElementById('points-display');
+    
+    if (ptsEl) ptsEl.innerText = score;
+    if (lobbyPtsEl) lobbyPtsEl.innerText = score; 
+    if (shopPtsEl) shopPtsEl.innerText = score;
+    if (currentPointsModal) currentPointsModal.innerText = score;
+    if (pointsDisplayHUD) pointsDisplayHUD.innerText = score;
+
     const btn50 = document.querySelector('.btn-redeem-small');
     const btn100 = document.querySelector('.btn-redeem-large');
+    
     if(btn50) btn50.disabled = (score < 50);
     if(btn100) btn100.disabled = (score < 100);
 }
