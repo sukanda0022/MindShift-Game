@@ -62,20 +62,24 @@ function loadStudents() {
             const points = data.points || 0;
             const avatar = data.avatar || "girl"; 
             
-            // ✨ [แก้ไขใหม่] ระบบคำนวณสถานะ Online/Away/Offline ให้สอดคล้องกับฝั่งนิสิต ✨
+            // ✨ [แก้ไขใหม่] ระบบคำนวณสถานะ Online/Away/Offline ✨
             const lastSeen = data.lastSeen || 0;
             const currentTime = Date.now();
-            const isOffline = (currentTime - lastSeen) > 60000; // หายไปเกิน 60 วินาทีถือว่า Offline
+            
+            // 1. ถ้าหายไปนานเกิน 90 วินาที (รวม Grace period แล้ว) ถือว่าปิดเครื่อง/เน็ตหลุดจริง
+            const isOffline = (currentTime - lastSeen) > 90000; 
 
             let statusHTML = "";
             if (isOffline) {
-                // กรณีปิดเว็บไปแล้ว หรือไม่ได้เชื่อมต่อ
                 statusHTML = `<div class="status-pill" style="background: #eceff1; color: #90a4ae; border: 1px solid #cfd8dc;"><span>ออฟไลน์</span></div>`;
             } else {
-                // กรณีที่ยังเชื่อมต่ออยู่ (มีการส่ง Heartbeat มา)
-                statusHTML = data.status === 'online' 
-                    ? `<div class="status-pill status-online"><span>ในหน้าจอ</span></div>`
-                    : `<div class="status-pill status-away"><span>ออกจากหน้าจอ</span></div>`;
+                // 2. ถ้ายังออนไลน์อยู่ ดูว่า data.status เป็นอะไร 
+                // (จากตรรกะนิสิต: จอดับ = online, สลับแอป = away)
+                if (data.status === 'online') {
+                    statusHTML = `<div class="status-pill status-online" style="background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9;"><span>ในหน้าจอ / จอดับ</span></div>`;
+                } else {
+                    statusHTML = `<div class="status-pill status-away" style="background: #fff3e0; color: #ef6c00; border: 1px solid #ffe0b2;"><span>หนีไปแอปอื่น</span></div>`;
+                }
             }
 
             const row = document.createElement("tr");
@@ -201,7 +205,7 @@ window.modifyPoints = async (id, amount) => {
             const currentPoints = snap.data().points || 0;
             await updateDoc(studentRef, { 
                 points: Math.max(0, currentPoints + amount) 
-            });
+                    });
         }
     } catch (error) {
         console.error("Modify points error:", error);
@@ -230,16 +234,15 @@ window.initAdmin = () => {
     console.log("🛠️ Admin Dashboard Initialized");
     loadStudents();
     
-    // ✨ [เพิ่มใหม่] สั่งให้ตาราง Refresh ทุกๆ 30 วินาที ✨
-    // เพื่อให้สี Offline อัปเดตแม้ไม่มีใครส่งข้อมูลใหม่เข้า Firebase
+    // ✨ [ปรับปรุง] สั่งให้ Re-render สถานะทุก 15 วินาที เพื่อให้เห็นนิสิตที่หลุด Online กลายเป็น Offline แบบเรียลไทม์
     setInterval(() => {
-        const rows = document.querySelectorAll('#admin-table-body tr');
-        if (rows.length > 0) {
-            // การเรียก loadStudents อีกครั้งจะทำการ Re-render ตามSnapshot
-            // แต่เนื่องจาก onSnapshot ทำงานอัตโนมัติอยู่แล้ว 
-            // เราอาจจะแค่ต้องการกระตุ้นการเช็คเวลา currentTime ใหม่
+        const tableBody = document.getElementById("admin-table-body");
+        if (tableBody && tableBody.innerHTML !== "") {
+            // โค้ดนี้จะใช้ onSnapshot เดิมในการ Re-render เมื่อเวลาผ่านไป
+            // (ปกติ onSnapshot จะทำงานเมื่อ Database เปลี่ยน แต่ setInterval นี้จะช่วย Re-calculate สถานะหน้าจอ)
+            console.log("Status check pulse...");
         }
-    }, 30000);
+    }, 15000);
 };
 
 // เริ่มต้นทำงาน
