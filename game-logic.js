@@ -314,46 +314,47 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [⭐ ปรับระบบใหม่: แยก “ปิดจอ” ออกจาก “สลับแอปจริง” ⭐] ---
-let isActuallyBlurred = false;
+// --- [⭐ ส่วนที่แก้ไขใหม่ล่าสุด: แยกแยะจอดับ VS สลับแอป ⭐] ---
+let isPageHidden = false; 
 let blurTimeout = null;
 
 window.addEventListener('blur', () => {
+    // เมื่อเว็บหลุดโฟกัส (เช่น ปัดแอปออก หรือไปคลิกหน้าต่างอื่น)
     blurTimeout = setTimeout(() => {
-        if (!document.hidden && !isBreakMode && gameInterval && !hasFailedPeriod) {
-            isActuallyBlurred = true;
-            isSleeping = true;
+        // ถ้าหน้าจอไม่ Hidden (จอยังเปิดอยู่) แต่ไม่มี Focus แปลว่าหนีไปแอปอื่นแน่นอน
+        if (!isPageHidden && !isBreakMode && gameInterval && !hasFailedPeriod) {
+            isSleeping = true; 
             tabSwitchCount++;
             updateImage();
-            updateOnlineStatus("away");
-            console.log("🚫 สลับแอป: แจ้งแอดมินว่า Away");
+            updateOnlineStatus("away"); // แจ้งแอดมินว่า "หนีไปแอปอื่น"
+            console.log("🚫 หนีไปแอปอื่น: เริ่มหักพลังงาน");
         }
-    }, 1500);
+    }, 600); 
 });
 
 window.addEventListener('focus', () => {
     clearTimeout(blurTimeout);
-    isActuallyBlurred = false;
-    isSleeping = false;
-    handleBackgroundTime();
+    isSleeping = false; // กลับมาสดใสทันที
+    handleBackgroundTime(); // เช็คเวลาที่หายไปจากการจอดับ (ถ้ามี)
     updateImage();
     updateOnlineStatus("online");
-    console.log("✅ กลับเข้าหน้าเว็บ: แจ้งแอดมินว่า Online");
+    console.log("✅ กลับมาที่เว็บ: Online");
 });
 
 document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-        clearTimeout(blurTimeout);
-        isActuallyBlurred = false;
+        // กรณี "จอดับ" หรือ "พับหน้าจอลง"
+        isPageHidden = true; 
+        clearTimeout(blurTimeout); // ยกเลิกสถานะ Away
+        isSleeping = false; // สำคัญ: จอดับต้องไม่ทำท่าง่วง พลังไม่ลดฮวบ
         localStorage.setItem("lastExitTime", Date.now().toString());
-        console.log("💤 จอดับ: คงสถานะ online ไว้ใน Firebase");
-        updateOnlineStatus("online");
+        updateOnlineStatus("online"); // แอดมินยังเห็นเขียวปกติ (จอดับ)
+        console.log("💤 จอดับ/ล็อคจอ: ถือเป็นพฤติกรรมปกติ");
     } else {
+        isPageHidden = false;
+        isSleeping = false;
         handleBackgroundTime();
-        if (!isActuallyBlurred) {
-            isSleeping = false;
-            updateOnlineStatus("online");
-        }
+        updateOnlineStatus("online");
     }
 });
 
