@@ -54,19 +54,15 @@ let tabSwitchCount = 0;
 let totalFocusSeconds = 0;
 let gameInterval = null;
 
-// ✨ [อัปเดตสถานะ Online/Away ไปยัง Firebase] ✨
-async function updateOnlineStatus(status) {
+// ✨ [อัปเดตสถานะแบบเร่งด่วนเพื่อรองรับมือถือพับจอ] ✨
+function updateOnlineStatus(status) {
     if (!userId) return;
-    try {
-        const userRef = doc(db, "students", userId);
-        // ใช้ updateDoc โดยตรงเพื่อให้ส่งข้อมูลเร็วที่สุด
-        await updateDoc(userRef, {
-            status: status,
-            lastSeen: Date.now()
-        });
-    } catch (error) {
-        console.error("Error updating status:", error);
-    }
+    const userRef = doc(db, "students", userId);
+    // ไม่ใช้ await ในจุดที่ต้องการความเร็วสูงสุด (เช่นตอนพับจอ)
+    updateDoc(userRef, {
+        status: status,
+        lastSeen: Date.now()
+    }).catch(e => console.error("Update Status Fail:", e));
 }
 
 // --- [ฟังก์ชันเสริม: ระบบคำนวณพลังงานย้อนหลัง] ---
@@ -81,9 +77,8 @@ function handleBackgroundTime() {
         if (diffSeconds > 0) {
             timeLeft = Math.max(0, timeLeft - diffSeconds);
 
-            // ปรับเกณฑ์: ถ้าหายไปเกิน 5 วินาที (สลับแอปไปมา) จะเริ่มหักพลังงาน
             if (diffSeconds > 5) {
-                const energyLost = diffSeconds * 1.5; // หักตามจริงที่หายไป
+                const energyLost = diffSeconds * 1.5;
                 periodEnergy = Math.max(0, periodEnergy - energyLost);
                 console.log(`[Sync Success] หายไป ${diffSeconds} วินาที หักพลังงาน ${energyLost.toFixed(1)}`);
             }
@@ -184,10 +179,6 @@ async function saveUserData() {
                 history: periodScores
             },
             lastUpdate: timestamp
-        }).catch(async (error) => {
-            if (error.code === 'not-found') {
-                console.warn("⚠️ บัญชีนี้ไม่มีอยู่ในระบบแล้ว");
-            }
         });
 
         localStorage.setItem("localLastUpdate", timestamp.toString());
@@ -269,13 +260,11 @@ export async function initGame() {
             totalFocusSeconds = data.stats?.focusSeconds || 0;
             tabSwitchCount = data.stats?.switches || 0;
             periodScores = data.stats?.history || [];
-
             localStorage.setItem("localLastUpdate", serverTime.toString());
         }
 
         const lobbyNameEl = document.getElementById('lobby-name');
         const userDisplayEl = document.getElementById('user-display');
-
         if (lobbyNameEl) lobbyNameEl.innerText = data.name || userName;
         if (userDisplayEl) userDisplayEl.innerText = data.name || userName;
 
@@ -314,52 +303,38 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [⭐ แก้ไข: การตรวจจับสถานะแบบ Instant ⭐] ---
-let isPageHidden = false;
-
+// --- [⭐ ส่วนที่แก้ไขเพื่อให้สถานะแอดมินเปลี่ยนทันทีและแม่นยำ ⭐] ---
 window.addEventListener('blur', () => {
-    // ทันทีที่ปัดจอ หรือสลับแอป (บังคับส่งทันทีเพื่อป้องกันโดน Freeze)
-    if (!document.hidden && !isBreakMode && gameInterval && !hasFailedPeriod) {
+    // 1. ส่งสถานะ Away ไป Firebase ทันที (ไม่ใช้ await เพื่อให้คำสั่งยิงออกไปก่อนแอพค้าง)
+    if (!isBreakMode && gameInterval && !hasFailedPeriod) {
+        updateOnlineStatus("away");
+        
         isSleeping = true; 
         tabSwitchCount++;
-        
-        // บันทึกเวลาที่ออกทันทีลง Storage เพื่อใช้คำนวณคะแนนตอนกลับมา
         localStorage.setItem("lastExitTime", Date.now().toString());
         
         updateImage();
-        
-        // 🚀 ส่งข้อมูลไปที่ Firebase ทันทีแบบไม่รอ async/await
-        updateOnlineStatus("away"); 
-        saveUserData(); 
-        console.log("🚫 สลับแอป: บังคับส่ง Away และบันทึกเวลาออก");
+        saveUserData(); // บันทึกข้อมูลสถิติควบคู่ไปด้วย
+        console.log("🚀 บังคับส่ง Away ทันที (Blur)");
     }
 });
 
 window.addEventListener('focus', () => {
-    isPageHidden = false;
     isSleeping = false;
-    
-    // 🧮 คำนวณเวลาที่หายไปและหักคะแนนย้อนหลัง
-    handleBackgroundTime();
-    
+    handleBackgroundTime(); // คำนวณพลังงานที่ควรจะเสียไประหว่างพับจอ
     updateImage();
-    
-    // 🚀 กลับมาปุ๊บ บังคับ Online ทันที
     updateOnlineStatus("online");
     saveUserData();
-    console.log("✅ กลับมาแล้ว: Online");
+    console.log("🚀 บังคับส่ง Online ทันที (Focus)");
 });
 
 document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-        isPageHidden = true;
-        // ถ้าเป็นการล็อคจอจริง (hidden) ให้ถือว่าเป็น Online ปกติแต่พักหน้าจอ
-        isSleeping = false; 
+        // กรณีล็อคหน้าจอ (Visibility Hidden) ให้บันทึกเวลาไว้แต่คงสถานะ Online (ถ้าต้องการให้แอดมินเห็นว่ายังอยู่)
         localStorage.setItem("lastExitTime", Date.now().toString());
+        // ถ้าต้องการให้ล็อคจอแล้ว Away ด้วย ให้แก้เป็น updateOnlineStatus("away")
         updateOnlineStatus("online"); 
-        console.log("💤 สถานะ: จอดับ (มองเป็น Online)");
     } else {
-        isPageHidden = false;
         isSleeping = false;
         handleBackgroundTime();
         updateOnlineStatus("online");
@@ -379,7 +354,6 @@ async function handleEnergyDepleted() {
             msg.innerText = "หลุดโฟกัสจนพลังหมด! ⚡";
             msg.style.color = "#f44336";
         }
-
         const resetBtn = document.getElementById('reset-btn');
         if (resetBtn) resetBtn.style.display = "block";
 
@@ -393,14 +367,12 @@ async function handleEnergyDepleted() {
 async function handlePeriodEnd() {
     if (!isBreakMode) {
         periodScores.push(Math.floor(periodEnergy));
-
         if (periodEnergy > 50) {
             playSound('confirm');
             score += 10;
             await saveUserData();
             updatePointsUI();
         }
-
         if (currentPeriod < totalPeriods) {
             isBreakMode = true;
             timeLeft = 300;
@@ -430,16 +402,13 @@ window.restartSession = function () {
     hasFailedPeriod = false;
     periodEnergy = 100;
     timeLeft = 1800;
-
     const msg = document.getElementById('status-msg');
     if (msg) {
         msg.innerText = "กำลังใช้สมาธิ... ✨";
         msg.style.color = "#4db6ac";
     }
-
     const resetBtn = document.getElementById('reset-btn');
     if (resetBtn) resetBtn.style.display = "none";
-
     updateImage();
     updateUI();
 };
@@ -474,13 +443,7 @@ function updateUI() {
 
 window.showStatistics = () => {
     playSound('tap');
-    renderStatsModal(
-        periodScores,
-        totalFocusSeconds,
-        tabSwitchCount,
-        userName,
-        getCurrentLevel()
-    );
+    renderStatsModal(periodScores, totalFocusSeconds, tabSwitchCount, userName, getCurrentLevel());
 };
 
 function showFinalSummary() {
@@ -585,7 +548,6 @@ export function updatePointsUI() {
 
     const btn50 = document.querySelector('.btn-redeem-small');
     const btn100 = document.querySelector('.btn-redeem-large');
-
     if (btn50) btn50.disabled = (score < 50);
     if (btn100) btn100.disabled = (score < 100);
 }
