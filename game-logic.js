@@ -80,6 +80,7 @@ function handleBackgroundTime() {
         if (diffSeconds > 0) {
             timeLeft = Math.max(0, timeLeft - diffSeconds);
             
+            // 🎁 ถ้าหายไปไม่เกิน 60 วินาที (กรณีจอดับแป๊บเดียว) จะไม่หักพลังงาน
             if (diffSeconds > 60) {
                 const energyLost = diffSeconds * 0.8;
                 periodEnergy = Math.max(0, periodEnergy - energyLost);
@@ -314,46 +315,48 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [⭐ ปรับใหม่: แยก “ปิดจอ” ออกจาก “สลับแอปจริง” แม่นยำขึ้น ⭐] ---
+// --- [⭐ ปรับใหม่: ตรวจปิดจอกับสลับแอปแยกกันแม่นยำสุด ⭐] ---
 let isActuallyBlurred = false;
 let blurTime = 0;
 let hiddenTime = 0;
 
-window.addEventListener('blur', () => {
-    blurTime = Date.now();
-    isActuallyBlurred = true;
+window.addEventListener("blur", () => {
+  blurTime = Date.now();
+  isActuallyBlurred = true;
 
-    setTimeout(() => {
-        const diff = hiddenTime - blurTime;
+  setTimeout(() => {
+    const diff = hiddenTime - blurTime;
 
-        if (diff >= 0 && diff < 800) {
-            console.log("💤 ตรวจพบ: ปิดจอเฉย ๆ (ยังคง Online)");
-            isActuallyBlurred = false;
-            updateOnlineStatus("online");
-        } else if (hiddenTime === 0 || diff > 1500) {
-            console.log("🚫 ตรวจพบ: สลับไปแอปอื่น (Away)");
-            updateOnlineStatus("away");
-        }
-    }, 1200);
-});
-
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-        hiddenTime = Date.now();
-        localStorage.setItem("lastExitTime", hiddenTime.toString());
-        console.log("📴 visibilitychange → หน้าจอถูกซ่อน");
+    if (diff >= 0 && diff < 800) {
+      console.log("💤 ปิดจอเฉย ๆ → ยัง Online");
+      isActuallyBlurred = false;
+      updateOnlineStatus("online");
     } else {
-        hiddenTime = 0;
-        isActuallyBlurred = false;
-        handleBackgroundTime();
-        updateOnlineStatus("online");
-        console.log("✅ กลับเข้าหน้าเว็บ: Online");
+      if (document.hidden) {
+        console.log("🚫 ตรวจพบ: สลับไปแอปอื่น (Away)");
+        updateOnlineStatus("away");
+      }
     }
+  }, 1500);
 });
 
-window.addEventListener('focus', () => {
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    hiddenTime = Date.now();
+    localStorage.setItem("lastExitTime", hiddenTime.toString());
+    console.log("📴 visibilitychange → หน้าจอถูกซ่อน");
+  } else {
+    hiddenTime = 0;
     isActuallyBlurred = false;
+    handleBackgroundTime();
     updateOnlineStatus("online");
+    console.log("✅ กลับเข้าหน้าเว็บ: Online");
+  }
+});
+
+window.addEventListener("focus", () => {
+  isActuallyBlurred = false;
+  updateOnlineStatus("online");
 });
 
 function checkFocus() {
