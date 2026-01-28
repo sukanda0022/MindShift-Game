@@ -56,8 +56,9 @@ let gameInterval = null;
 
 // --- [⭐ ตัวแปรควบคุมขั้นสูงสำหรับการแยกแยะจอดับ ⭐] ---
 let loopCheck;
-let lastBlurTime = 0;
-let isActuallyAway = false; // ตัวแปรตัดสินจริงว่า "จงใจออกจากหน้าเว็บ"
+let lastHeartbeat = Date.now();
+let heartbeatTimer;
+let isActuallyAway = false; // ตัวตัดสิน: true = สลับแอป (หักคะแนน), false = ปิดจอ (ไม่หัก)
 
 // ✨ [อัปเดตสถานะแอดมิน] ✨
 function updateOnlineStatus(status) {
@@ -79,15 +80,15 @@ function handleBackgroundTime() {
         const diffSeconds = Math.floor((currentTime - parseFloat(lastExit)) / 1000);
 
         if (diffSeconds > 5) {
-            // ⭐ หักคะแนน "เฉพาะ" เคสที่ตัดสินแล้วว่าเป็น isActuallyAway (สลับแอป) เท่านั้น
+            // ⭐ Logic ที่คุณต้องการ: หักพลังงานเฉพาะเมื่อ "สลับแอป" เท่านั้น
             if (isActuallyAway) {
                 const energyLost = diffSeconds * 1.5;
                 periodEnergy = Math.max(0, periodEnergy - energyLost);
                 console.log(`[Penalty] สลับแอปไป ${diffSeconds} วินาที หักพลังงาน ${energyLost.toFixed(1)}`);
             } else {
-                // ถ้าแค่จอดับ ให้หักแค่เวลา Timer แต่พลังงาน (Energy) ไม่ต้องลด
+                // ถ้าแค่จอดับ (isActuallyAway = false) หักแค่เวลาใน Timer แต่ "ไม่หักพลังงาน"
                 timeLeft = Math.max(0, timeLeft - diffSeconds);
-                console.log(`[Resume] กลับมาจากจอดับ (${diffSeconds} วินาที) พลังงานเท่าเดิม`);
+                console.log(`[Screen Wake] กลับมาจากจอดับ (${diffSeconds} วินาที) ไม่มีการหักพลังงาน ✨`);
             }
 
             updateUI();
@@ -281,17 +282,15 @@ export async function initGame() {
     });
 
     showScreen('lobby-screen');
-    startLoopCheck();
+    startHeartbeat(); // เริ่มต้นระบบ Heartbeat ตรวจสอบความแอคทีฟ
 }
 
-function startLoopCheck() {
-    const check = () => {
-        if (!document.hidden) {
-            localStorage.setItem("lastActiveTick", Date.now().toString());
-            loopCheck = requestAnimationFrame(check);
-        }
-    };
-    loopCheck = requestAnimationFrame(check);
+// --- [⭐ ระบบ Heartbeat ป้องกันการสับสนตอนจอดับ ⭐] ---
+function startHeartbeat() {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(() => {
+        lastHeartbeat = Date.now();
+    }, 500); // อัปเดตทุกครึ่งวินาที
 }
 
 function startGameLoop() {
@@ -302,7 +301,7 @@ function startGameLoop() {
         if (timeLeft > 0) {
             timeLeft--;
             if (!isBreakMode) {
-                // พลังงานลดเฉพาะเมื่อสลับแอป (isActuallyAway) หรือสลีป
+                // พลังงานลดเฉพาะเมื่อระบบตัดสินว่าเป็น "ตั้งใจสลับแอป" เท่านั้น
                 if (isActuallyAway) {
                     periodEnergy -= 1.5;
                     if (periodEnergy <= 0) {
@@ -321,45 +320,37 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [⭐ ส่วนการจัดการ Visibility และ Blur/Focus ขั้นสูง ⭐] ---
+// --- [⭐ ส่วนการจัดการ Visibility (ฉบับแก้ไขเพื่อคนปิดจอ) ⭐] ---
 
-// 1. ดักจับ Blur (สลับแอป/พับจอ)
-window.addEventListener('blur', () => {
-    lastBlurTime = Date.now();
-});
-
-// 2. ดักจับ Visibility Change (แยกจอดับ vs สลับแอป)
 document.addEventListener('visibilitychange', () => {
     const now = Date.now();
 
     if (document.hidden) {
         localStorage.setItem("lastExitTime", now.toString());
+        
+        // 💡 หัวใจสำคัญ: เช็คว่า "ช่วงเวลาที่หายไป" กับ "ชีพจรล่าสุด" ห่างกันแค่ไหน
+        // ถ้าห่างกันเกิน 600ms แสดงว่าเบราว์เซอร์ถูก OS สั่งหยุด (กดปิดจอ)
+        // ถ้าห่างกันน้อยมาก (<600ms) แสดงว่าเบราว์เซอร์ยังทำงานปกติในวินาทีที่หายไป (ปัดแอป)
+        const gap = now - lastHeartbeat;
 
-        // ถ้าสัญญาณ Hidden มาหลังจาก Blur ไม่เกิน 150ms = จงใจปัดแอป/สลับ Tab
-        if (now - lastBlurTime < 150) {
-            isActuallyAway = true;
+        if (gap < 600) {
+            isActuallyAway = true; // ตัดสินว่าเป็น: สลับแอป
             isSleeping = true; 
             tabSwitchCount++;
             updateOnlineStatus("away");
-            updateImage();
-            console.log("🚫 สถานะ: สลับแอป (Away)");
-        } 
-        else {
-            // ถ้า Hidden มาโดยไม่มี Blur นำหน้า (หรือห่างกันมาก) = กดปุ่มปิดหน้าจอ
-            isActuallyAway = false;
+            console.log("🚫 สถานะ: สลับแอป (Away) -> หักพลังงาน");
+        } else {
+            isActuallyAway = false; // ตัดสินว่าเป็น: แค่ปิดหน้าจอ
             updateOnlineStatus("online"); 
-            console.log("😴 สถานะ: จอดับ/ล็อคจอ (Online)");
+            console.log("😴 สถานะ: ปิดหน้าจอ (Online) -> ไม่หักพลังงาน");
         }
         saveUserData();
-    } 
-    else {
-        cancelAnimationFrame(loopCheck);
+    } else {
         isSleeping = false;
-        handleBackgroundTime(); 
+        handleBackgroundTime(); // จะเช็ค isActuallyAway จากตอนขาออก
         updateOnlineStatus("online");
         updateImage();
         saveUserData();
-        startLoopCheck();
     }
 });
 
