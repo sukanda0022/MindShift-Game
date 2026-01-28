@@ -55,9 +55,11 @@ let totalFocusSeconds = 0;
 let gameInterval = null;
 
 // --- [⭐ ตัวแปรควบคุมขั้นสูงสำหรับการแยกแยะจอดับ ⭐] ---
-let loopCheck;
-let lastBlurTime = 0;
-let isActuallyAway = false; // ตัวแปรตัดสินจริงว่า "จงใจออกจากหน้าเว็บ"
+let lastHeartbeat = Date.now();
+let heartbeatTimer;
+let isActuallyAway = false; 
+let isSystemFrozen = false; 
+let isSaving = false; // ✨ เพิ่มตัวแปรเช็คสถานะการบันทึกเพื่อกันคะแนนโดนทับ
 
 // ✨ [อัปเดตสถานะแอดมิน] ✨
 function updateOnlineStatus(status) {
@@ -79,20 +81,16 @@ function handleBackgroundTime() {
         const diffSeconds = Math.floor((currentTime - parseFloat(lastExit)) / 1000);
 
         if (diffSeconds > 5) {
-            // ⭐ หักคะแนน "เฉพาะ" เคสที่ตัดสินแล้วว่าเป็น isActuallyAway (สลับแอป) เท่านั้น
             if (isActuallyAway) {
                 const energyLost = diffSeconds * 1.5;
                 periodEnergy = Math.max(0, periodEnergy - energyLost);
                 console.log(`[Penalty] สลับแอปไป ${diffSeconds} วินาที หักพลังงาน ${energyLost.toFixed(1)}`);
             } else {
-                // ถ้าแค่จอดับ ให้หักแค่เวลา Timer แต่พลังงาน (Energy) ไม่ต้องลด
                 timeLeft = Math.max(0, timeLeft - diffSeconds);
-                console.log(`[Resume] กลับมาจากจอดับ (${diffSeconds} วินาที) พลังงานเท่าเดิม`);
+                console.log(`[Screen Wake] กลับมาจากจอดับ (${diffSeconds} วินาที) ไม่มีการหักพลังงาน ✨`);
             }
-
             updateUI();
             updateImage();
-
             if (periodEnergy <= 0) {
                 periodEnergy = 0;
                 handleEnergyDepleted();
@@ -168,6 +166,7 @@ export function updateBackground() {
 // --- 6. ระบบบันทึกข้อมูลไป Firebase ---
 async function saveUserData() {
     if (!userId) return;
+    isSaving = true; // ✨ ล็อคทันทีที่เริ่มบันทึก
     try {
         const timestamp = Date.now();
         const userRef = doc(db, "students", userId);
@@ -191,6 +190,9 @@ async function saveUserData() {
         localStorage.setItem("localLastUpdate", timestamp.toString());
     } catch (error) {
         console.error("Firebase Save Error:", error);
+    } finally {
+        // ✨ ปลดล็อคหลังจากเซฟเสร็จ 1 วินาที เพื่อให้ Firebase อัปเดตข้อมูลให้เสร็จก่อน
+        setTimeout(() => { isSaving = false; }, 1000); 
     }
 }
 
@@ -247,21 +249,14 @@ export async function initGame() {
     updateOnlineStatus("online");
 
     onSnapshot(doc(db, "students", userId), (docSnap) => {
-        if (!docSnap.exists()) {
-            console.error("🚫 ข้อมูลถูกลบโดยแอดมิน");
-            localStorage.clear();
-            alert("บัญชีของคุณถูกรีเซ็ตหรือถูกลบ กรุณาล็อกอินใหม่เพื่อเริ่มรอบใหม่");
-            window.location.href = 'index.html';
-            return;
-        }
+        if (!docSnap.exists() || isSaving) return; // ✨ ถ้ากำลังเซฟอยู่ ห้ามเอาข้อมูล Cloud มาทับเด็ดขาด!
 
         const data = docSnap.data();
-        score = data.points || 0;
-
         const serverTime = data.lastUpdate || 0;
         const localTime = parseInt(localStorage.getItem("localLastUpdate") || "0");
 
         if (serverTime > localTime) {
+            score = data.points || 0;
             currentSkin = data.currentSkin || "default";
             currentBG = data.currentBG || "classroom.jpg";
             totalFocusSeconds = data.stats?.focusSeconds || 0;
@@ -281,17 +276,14 @@ export async function initGame() {
     });
 
     showScreen('lobby-screen');
-    startLoopCheck();
+    startHeartbeat();
 }
 
-function startLoopCheck() {
-    const check = () => {
-        if (!document.hidden) {
-            localStorage.setItem("lastActiveTick", Date.now().toString());
-            loopCheck = requestAnimationFrame(check);
-        }
-    };
-    loopCheck = requestAnimationFrame(check);
+function startHeartbeat() {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(() => {
+        lastHeartbeat = Date.now();
+    }, 500);
 }
 
 function startGameLoop() {
@@ -302,7 +294,6 @@ function startGameLoop() {
         if (timeLeft > 0) {
             timeLeft--;
             if (!isBreakMode) {
-                // พลังงานลดเฉพาะเมื่อสลับแอป (isActuallyAway) หรือสลีป
                 if (isActuallyAway) {
                     periodEnergy -= 1.5;
                     if (periodEnergy <= 0) {
@@ -321,45 +312,45 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [⭐ ส่วนการจัดการ Visibility และ Blur/Focus ขั้นสูง ⭐] ---
+// --- [⭐ ส่วนการจัดการ Visibility & OS Freeze ⭐] ---
 
-// 1. ดักจับ Blur (สลับแอป/พับจอ)
-window.addEventListener('blur', () => {
-    lastBlurTime = Date.now();
+window.addEventListener('freeze', () => {
+    isSystemFrozen = true;
+    isActuallyAway = false;
+    updateOnlineStatus("online"); 
 });
 
-// 2. ดักจับ Visibility Change (แยกจอดับ vs สลับแอป)
+window.addEventListener('resume', () => {
+    isSystemFrozen = false;
+    isActuallyAway = false;
+    updateOnlineStatus("online");
+});
+
 document.addEventListener('visibilitychange', () => {
     const now = Date.now();
 
     if (document.hidden) {
         localStorage.setItem("lastExitTime", now.toString());
-
-        // ถ้าสัญญาณ Hidden มาหลังจาก Blur ไม่เกิน 150ms = จงใจปัดแอป/สลับ Tab
-        if (now - lastBlurTime < 150) {
-            isActuallyAway = true;
-            isSleeping = true; 
-            tabSwitchCount++;
-            updateOnlineStatus("away");
-            updateImage();
-            console.log("🚫 สถานะ: สลับแอป (Away)");
-        } 
-        else {
-            // ถ้า Hidden มาโดยไม่มี Blur นำหน้า (หรือห่างกันมาก) = กดปุ่มปิดหน้าจอ
-            isActuallyAway = false;
-            updateOnlineStatus("online"); 
-            console.log("😴 สถานะ: จอดับ/ล็อคจอ (Online)");
-        }
-        saveUserData();
-    } 
-    else {
-        cancelAnimationFrame(loopCheck);
+        
+        setTimeout(() => {
+            if (isSystemFrozen) {
+                isActuallyAway = false;
+                updateOnlineStatus("online"); 
+            } else {
+                isActuallyAway = true;
+                isSleeping = true; 
+                tabSwitchCount++;
+                updateOnlineStatus("away");
+                updateImage();
+            }
+            saveUserData();
+        }, 150);
+    } else {
         isSleeping = false;
-        handleBackgroundTime(); 
+        handleBackgroundTime();
         updateOnlineStatus("online");
         updateImage();
         saveUserData();
-        startLoopCheck();
     }
 });
 
