@@ -79,7 +79,7 @@ function handleBackgroundTime() {
 
         if (diffSeconds > 0) {
             timeLeft = Math.max(0, timeLeft - diffSeconds);
-            
+
             if (diffSeconds > 60) {
                 const energyLost = diffSeconds * 0.8;
                 periodEnergy = Math.max(0, periodEnergy - energyLost);
@@ -138,7 +138,7 @@ export function updateImage() {
 
     if (!fileName.endsWith('.png')) fileName += ".png";
     const newSrc = `images/${fileName}`;
-    
+
     if (img.getAttribute('src') !== newSrc) {
         img.src = newSrc;
     }
@@ -315,41 +315,48 @@ function startGameLoop() {
 }
 
 // --- [⭐ ส่วนที่แก้ไขใหม่ล่าสุด: แยกแยะจอดับ VS สลับแอป (Away) ⭐] ---
-let isPageHidden = false; 
+// --- [⭐ ส่วนที่แก้ไข: บังคับอัปเดต Firebase ทันทีที่สลับแอป ⭐] ---
+let isPageHidden = false;
 let blurTimeout = null;
 
 window.addEventListener('blur', () => {
-    // เมื่อมีการ "สลับแอป" หรือออกจากหน้าจอเว็บ แต่หน้าจอยังไม่ดับ
+    // เมื่อปัดหน้าจอไปแอปอื่น (เช่น IG)
     blurTimeout = setTimeout(async () => {
-        // ถ้าหน้าจอยังเปิดอยู่ (!document.hidden) แต่เว็บไม่มีโฟกัส = สลับไปเล่นแอปอื่น
+        // ถ้าหน้าจอยังไม่ดับ (!document.hidden) แต่เว็บหลุดโฟกัส = สลับแอปแน่นอน
         if (!document.hidden && !isBreakMode && gameInterval && !hasFailedPeriod) {
-            isSleeping = true; 
+            isSleeping = true;
             tabSwitchCount++;
             updateImage();
-            await updateOnlineStatus("away"); // แจ้งแอดมินว่า "หนีไปแอปอื่น"
-            console.log("🚫 สลับไปแอปอื่น: แจ้ง Away");
+
+            // 🚀 บรรทัดนี้คือจุดที่ขาดไป: ต้องสั่งส่งค่าไป Firebase ทันที!
+            await updateOnlineStatus("away");
+            console.log("🚫 สลับไปแอปอื่น: แจ้งแอดมินว่า Away แล้ว");
         }
-    }, 700); // หน่วงเวลา 0.7 วินาทีเพื่อให้สัญญาณ hidden ทำงานก่อนถ้าเป็นการล็อคจอ
+    }, 1000); // หน่วง 1 วินาทีเพื่อเช็คว่าไม่ใช่การล็อคจอ
 });
 
 window.addEventListener('focus', async () => {
     clearTimeout(blurTimeout);
-    isSleeping = false; 
+    isSleeping = false;
     handleBackgroundTime();
     updateImage();
+
+    // 🚀 กลับมาหน้าเว็บ: แจ้งแอดมินว่า Online ทันที
     await updateOnlineStatus("online");
     console.log("✅ กลับเข้าสู่เว็บ: Online");
 });
 
 document.addEventListener('visibilitychange', async () => {
     if (document.hidden) {
-        // กรณี "จอดับ" หรือ "ล็อคหน้าจอ" (สัญญาณ hidden จะทำงานทันที)
-        isPageHidden = true; 
-        clearTimeout(blurTimeout); // สำคัญมาก: ยกเลิกการสั่ง Away ทันทีเพราะนี่ไม่ใช่การสลับแอป
-        isSleeping = false; // จอดับไม่ถือว่าหลับ พลังงานไม่ลด
+        // กรณี "จอดับ" หรือ "ล็อคจอ"
+        isPageHidden = true;
+        clearTimeout(blurTimeout); // ยกเลิกสถานะ Away ทันที
+        isSleeping = false;
         localStorage.setItem("lastExitTime", Date.now().toString());
-        await updateOnlineStatus("online"); // แอดมินจะเห็น "ในหน้าจอ / จอดับ" (เขียวปกติ)
-        console.log("💤 จอดับ/ล็อคจอ: ถือเป็นพฤติกรรมปกติ");
+
+        // 💤 แจ้งแอดมินว่า Online ปกติ (แค่จอดับ)
+        await updateOnlineStatus("online");
+        console.log("💤 จอดับ/ล็อคจอ: คงสถานะ Online");
     } else {
         isPageHidden = false;
         isSleeping = false;
@@ -545,7 +552,7 @@ window.selectItem = (name, price, imgSrc, type) => {
 window.processRedeem = async (cost) => {
     playSound('tap');
     if (score >= cost) {
-        if(!confirm(`ต้องการใช้ ${cost} แต้ม เพื่อแลกรางวัลใช่หรือไม่?`)) return;
+        if (!confirm(`ต้องการใช้ ${cost} แต้ม เพื่อแลกรางวัลใช่หรือไม่?`)) return;
         score -= cost;
         try {
             await saveUserData();
@@ -564,22 +571,22 @@ window.processRedeem = async (cost) => {
 
 export function updatePointsUI() {
     const ptsEl = document.getElementById('pts');
-    const lobbyPtsEl = document.getElementById('lobby-pts'); 
+    const lobbyPtsEl = document.getElementById('lobby-pts');
     const shopPtsEl = document.getElementById('shop-pts-balance');
     const currentPointsModal = document.getElementById('current-points');
     const pointsDisplayHUD = document.getElementById('points-display');
-    
+
     if (ptsEl) ptsEl.innerText = score;
-    if (lobbyPtsEl) lobbyPtsEl.innerText = score; 
+    if (lobbyPtsEl) lobbyPtsEl.innerText = score;
     if (shopPtsEl) shopPtsEl.innerText = score;
     if (currentPointsModal) currentPointsModal.innerText = score;
     if (pointsDisplayHUD) pointsDisplayHUD.innerText = score;
 
     const btn50 = document.querySelector('.btn-redeem-small');
     const btn100 = document.querySelector('.btn-redeem-large');
-    
-    if(btn50) btn50.disabled = (score < 50);
-    if(btn100) btn100.disabled = (score < 100);
+
+    if (btn50) btn50.disabled = (score < 50);
+    if (btn100) btn100.disabled = (score < 100);
 }
 
 initGame();
