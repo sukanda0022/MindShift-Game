@@ -54,9 +54,10 @@ let tabSwitchCount = 0;
 let totalFocusSeconds = 0;
 let gameInterval = null;
 
-// --- [⭐ ตัวแปรสำหรับ Logic แยกแยะจอดับ ⭐] ---
+// --- [⭐ ตัวแปรควบคุมขั้นสูงสำหรับการแยกแยะจอดับ ⭐] ---
 let loopCheck;
-let isAppSwitching = false; // ตัวแปรตัดสินว่า "จงใจไปแอปอื่น" หรือไม่
+let lastBlurTime = 0;
+let isActuallyAway = false; // ตัวแปรตัดสินจริงว่า "จงใจออกจากหน้าเว็บ"
 
 // ✨ [อัปเดตสถานะแอดมิน] ✨
 function updateOnlineStatus(status) {
@@ -77,16 +78,16 @@ function handleBackgroundTime() {
         const currentTime = Date.now();
         const diffSeconds = Math.floor((currentTime - parseFloat(lastExit)) / 1000);
 
-        if (diffSeconds > 0) {
-            // ⭐ Logic สำคัญ: ถ้าเป็นการสลับแอป (isAppSwitching) ถึงจะหักพลังงาน
-            if (diffSeconds > 5 && isAppSwitching) {
+        if (diffSeconds > 5) {
+            // ⭐ หักคะแนน "เฉพาะ" เคสที่ตัดสินแล้วว่าเป็น isActuallyAway (สลับแอป) เท่านั้น
+            if (isActuallyAway) {
                 const energyLost = diffSeconds * 1.5;
                 periodEnergy = Math.max(0, periodEnergy - energyLost);
-                console.log(`[Focus Check] สลับแอปไป ${diffSeconds} วินาที หักพลังงาน ${energyLost.toFixed(1)}`);
+                console.log(`[Penalty] สลับแอปไป ${diffSeconds} วินาที หักพลังงาน ${energyLost.toFixed(1)}`);
             } else {
-                // ถ้าแค่จอดับ ไม่หักพลังงาน แต่หักเวลาใน Timer ตามจริง
+                // ถ้าแค่จอดับ ให้หักแค่เวลา Timer แต่พลังงาน (Energy) ไม่ต้องลด
                 timeLeft = Math.max(0, timeLeft - diffSeconds);
-                console.log(`[Screen Wake] กลับมาจากจอดับ (${diffSeconds} วินาที) ไม่หักพลังงาน`);
+                console.log(`[Resume] กลับมาจากจอดับ (${diffSeconds} วินาที) พลังงานเท่าเดิม`);
             }
 
             updateUI();
@@ -177,7 +178,7 @@ async function saveUserData() {
             points: score,
             currentSkin: currentSkin,
             currentBG: currentBG,
-            status: isSleeping ? "away" : "online",
+            status: isActuallyAway ? "away" : "online",
             lastSeen: timestamp,
             stats: {
                 focusSeconds: totalFocusSeconds,
@@ -283,7 +284,6 @@ export async function initGame() {
     startLoopCheck();
 }
 
-// ✨ [⭐ หัวใจสำคัญ: ระบบ Loop ตรวจสอบสถานะการทำงานของเว็บ ⭐] ✨
 function startLoopCheck() {
     const check = () => {
         if (!document.hidden) {
@@ -302,7 +302,8 @@ function startGameLoop() {
         if (timeLeft > 0) {
             timeLeft--;
             if (!isBreakMode) {
-                if (isSleeping) {
+                // พลังงานลดเฉพาะเมื่อสลับแอป (isActuallyAway) หรือสลีป
+                if (isActuallyAway) {
                     periodEnergy -= 1.5;
                     if (periodEnergy <= 0) {
                         periodEnergy = 0;
@@ -320,48 +321,44 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [⭐ ส่วนการจัดการ Visibility และ Blur/Focus ⭐] ---
+// --- [⭐ ส่วนการจัดการ Visibility และ Blur/Focus ขั้นสูง ⭐] ---
 
-// เมื่อมีการกดพับแอป หรือเปลี่ยน Tab
+// 1. ดักจับ Blur (สลับแอป/พับจอ)
 window.addEventListener('blur', () => {
-    // ถ้าหายไปในขณะที่ไม่ได้เป็นช่วงพัก = ตั้งใจไปแอปอื่น
-    if (!isBreakMode && gameInterval && !hasFailedPeriod) {
-        isAppSwitching = true; 
-        isSleeping = true; 
-        tabSwitchCount++;
-        updateOnlineStatus("away");
-        updateImage();
-        saveUserData();
-        console.log("🚫 สถานะ: สลับแอป (Away)");
-    }
+    lastBlurTime = Date.now();
 });
 
-window.addEventListener('focus', () => {
-    isAppSwitching = false; // รีเซ็ตสถานะสลับแอป
-    isSleeping = false;
-    handleBackgroundTime(); 
-    updateImage();
-    updateOnlineStatus("online");
-    saveUserData();
-});
-
+// 2. ดักจับ Visibility Change (แยกจอดับ vs สลับแอป)
 document.addEventListener('visibilitychange', () => {
+    const now = Date.now();
+
     if (document.hidden) {
-        localStorage.setItem("lastExitTime", Date.now().toString());
-        
-        // เช็คดีเลย์สั้นๆ: ถ้าจอดับเอง สัญญาณ Blur จะไม่ทำงานทันทีเหมือนการสลับแอป
-        setTimeout(() => {
-            if (!isAppSwitching) {
-                // ถ้า isAppSwitching ยังเป็น false แสดงว่าแค่จอดับ
-                updateOnlineStatus("online"); 
-                console.log("😴 สถานะ: จอดับ/ล็อคจอ (Online)");
-            }
-        }, 150);
-    } else {
+        localStorage.setItem("lastExitTime", now.toString());
+
+        // ถ้าสัญญาณ Hidden มาหลังจาก Blur ไม่เกิน 150ms = จงใจปัดแอป/สลับ Tab
+        if (now - lastBlurTime < 150) {
+            isActuallyAway = true;
+            isSleeping = true; 
+            tabSwitchCount++;
+            updateOnlineStatus("away");
+            updateImage();
+            console.log("🚫 สถานะ: สลับแอป (Away)");
+        } 
+        else {
+            // ถ้า Hidden มาโดยไม่มี Blur นำหน้า (หรือห่างกันมาก) = กดปุ่มปิดหน้าจอ
+            isActuallyAway = false;
+            updateOnlineStatus("online"); 
+            console.log("😴 สถานะ: จอดับ/ล็อคจอ (Online)");
+        }
+        saveUserData();
+    } 
+    else {
         cancelAnimationFrame(loopCheck);
         isSleeping = false;
-        handleBackgroundTime();
+        handleBackgroundTime(); 
         updateOnlineStatus("online");
+        updateImage();
+        saveUserData();
         startLoopCheck();
     }
 });
