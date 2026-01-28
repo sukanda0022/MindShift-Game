@@ -37,7 +37,7 @@ const playSound = (soundKey) => {
     }
 };
 
-// --- 1. ตัวแปรสถานะเกม ---
+// --- 1. ตัวแปรสถานะ game ---
 export let score = 0;
 export let currentSkin = "default";
 export let currentBG = "classroom.jpg";
@@ -80,11 +80,15 @@ function handleBackgroundTime() {
 
         if (diffSeconds > 0) {
             timeLeft = Math.max(0, timeLeft - diffSeconds);
-            // ปรับลดพลังงานเมื่อมีการกลับมาจากสถานะ "ซ่อนหน้าจอ" (document.hidden)
-            const energyLost = diffSeconds * 0.8;
-            periodEnergy = Math.max(0, periodEnergy - energyLost);
-
-            console.log(`[Sync Success] หายไป ${diffSeconds} วินาที หักพลังงาน ${energyLost.toFixed(1)}`);
+            
+            // 🎁 ปรับปรุงใหม่: ถ้าหายไปไม่เกิน 60 วินาที (กรณีจอดับแป๊บเดียว) จะไม่หักพลังงาน
+            if (diffSeconds > 60) {
+                const energyLost = diffSeconds * 0.8;
+                periodEnergy = Math.max(0, periodEnergy - energyLost);
+                console.log(`[Sync Success] หายไปนานเกินไป (${diffSeconds} วินาที) หักพลังงาน ${energyLost.toFixed(1)}`);
+            } else {
+                console.log(`[Sync Success] กลับมาทันเวลา! (หายไป ${diffSeconds} วินาที) ไม่มีการลงโทษหักพลังงาน`);
+            }
 
             updateUI();
             updateImage();
@@ -107,7 +111,6 @@ function getCurrentLevel() {
 }
 
 // --- 4. ระบบจัดการรูปภาพตัวละคร ---
-// --- 4. ระบบจัดการรูปภาพตัวละคร (แก้ไขใหม่ให้ตรงตามชื่อไฟล์ของคุณ) ---
 export function updateImage() {
     const img = document.getElementById('main-character-img');
     if (!img) return;
@@ -116,23 +119,17 @@ export function updateImage() {
     const lv = getCurrentLevel();
     let fileName = "";
 
-    // 1. ถ้าสอบตก (Fail)
     if (hasFailedPeriod) {
-        // ใช้ logic: เลเวล 1 คือ fail1, เลเวลอื่นคือ {lv}_fail
         fileName = (lv === '1') ? `${userAvatar}_fail1.png` : `${userAvatar}_${lv}_fail.png`;
     }
-    // 2. ถ้ากำลังหลับ หรือ พลังงานต่ำ (Sleep)
     else if (isSleeping || periodEnergy <= 30) {
-        // ใช้ logic: เลขอยู่หลังคำว่า sleep ตามที่คุณสรุป (เช่น boy_sleep2)
         fileName = `${userAvatar}_sleep${lv}.png`;
     }
-    // 3. ช่วงพักผ่อน
     else if (isBreakMode) {
         fileName = (currentSkin !== "default" && currentSkin !== "")
             ? currentSkin.replace('.png', '') + "_idle.png"
             : `${userAvatar}_${lv}.png`;
     }
-    // 4. สถานะปกติ
     else {
         if (currentSkin !== "default" && currentSkin !== "") {
             fileName = currentSkin;
@@ -148,7 +145,6 @@ export function updateImage() {
         img.src = newSrc;
     }
 
-    // ระบบสำรอง (Fallback) หากหาไฟล์ไม่เจอ
     img.onerror = () => {
         if (hasFailedPeriod) {
             img.src = `images/${userAvatar}_fail1.png`;
@@ -316,43 +312,55 @@ function startGameLoop() {
     }, 1000);
 }
 
-// ✨ [ส่วนที่แก้ไข: ปรับปรุงระบบตรวจจับการสลับหน้าจอ VS ล็อกจอ] ✨
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-        // กรณีสลับแท็บ หรือ ย่อหน้าต่าง (ลงโทษ)
+// ✨ [ส่วนที่แก้ไข: แยกสถานะสลับแอป VS ล็อกจอ] ✨
+// 1. ตรวจจับการสลับหน้าต่าง (สลับแอป/เปิดแท็บใหม่ = ลงโทษทันที)
+window.addEventListener('blur', () => {
+    if (!isBreakMode && gameInterval && !hasFailedPeriod) {
         isSleeping = true;
-        localStorage.setItem("lastExitTime", Date.now().toString());
-        tabSwitchCount++;
+        tabSwitchCount++; // นับการสลับหน้าจอเฉพาะตอนสลับแอปจริงๆ
         updateImage();
         updateOnlineStatus("away");
         console.log("🚫 สลับหน้าจอ: เริ่มหักพลังงาน");
-    } else {
-        // กลับมาที่หน้าเดิม
+    }
+});
+
+window.addEventListener('focus', () => {
+    if (isSleeping) {
         isSleeping = false;
         handleBackgroundTime();
         updateImage();
         updateOnlineStatus("online");
-        console.log("✅ กลับมาที่หน้าจอ: หยุดหักพลังงาน");
+        console.log("✅ กลับมาที่เกม: หยุดหักพลังงาน");
     }
 });
 
-// ฟังก์ชันเช็คสถานะเพื่ออัปเดตแอดมินแบบ Real-time (ไม่หักคะแนนกรณีแค่ Blur หรือ Lock จอ)
-function checkFocus() {
-    // ใช้เฉพาะ document.hidden เพื่อตัดสินใจเรื่อง "หลับ (isSleeping)" 
-    // เพื่อให้การล็อกหน้าจอบางเบราว์เซอร์ที่หน้าเว็บยังเป็นแท็บหลักไม่ถูกทำโทษ
-    const hidden = document.hidden;
-
-    if (hidden !== isSleeping) {
-        isSleeping = hidden;
-        if (isSleeping) {
-            localStorage.setItem("lastExitTime", Date.now().toString());
-            updateOnlineStatus("away");
-        } else {
+// 2. ตรวจจับการซ่อนหน้าจอ (ย่อเบราว์เซอร์หรือจอดับ)
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        // บันทึกเวลาที่หายไปไว้เสมอ (ทั้งจอดับและสลับแอป)
+        localStorage.setItem("lastExitTime", Date.now().toString());
+        updateOnlineStatus("away");
+    } else {
+        // หากกลับมาจากการที่ document.hidden (แต่ไม่ใช่การ blur ไปแอปอื่น) 
+        // จะมีการเช็ค grace period ใน handleBackgroundTime
+        if (!isSleeping) {
             handleBackgroundTime();
             updateOnlineStatus("online");
         }
-        updateImage();
     }
+});
+
+// ฟังก์ชันเช็คสถานะเพื่ออัปเดตแอดมินแบบ Real-time
+function checkFocus() {
+    // อัปเดตสถานะ Away ในฐานข้อมูลตามความจริงของหน้าจอ (Admin จะเห็นว่า Offline/Away)
+    // แต่ isSleeping จะถูกควบคุมด้วย window event ด้านบนเพื่อให้ยุติธรรมต่อคนจอดับ
+    const hidden = document.hidden;
+    
+    // แจ้งเตือน Console เพื่อตรวจสอบการทำงาน
+    if (hidden && !localStorage.getItem("lastExitTime")) {
+         localStorage.setItem("lastExitTime", Date.now().toString());
+    }
+    
     requestAnimationFrame(checkFocus);
 }
 
