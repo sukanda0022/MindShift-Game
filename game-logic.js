@@ -80,7 +80,6 @@ function handleBackgroundTime() {
         if (diffSeconds > 0) {
             timeLeft = Math.max(0, timeLeft - diffSeconds);
             
-            // 🎁 ถ้าหายไปไม่เกิน 60 วินาที (กรณีจอดับแป๊บเดียว) จะไม่หักพลังงาน
             if (diffSeconds > 60) {
                 const energyLost = diffSeconds * 0.8;
                 periodEnergy = Math.max(0, periodEnergy - energyLost);
@@ -315,48 +314,47 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [⭐ ปรับใหม่: ตรวจปิดจอกับสลับแอปแยกกันแม่นยำสุด ⭐] ---
+// --- [⭐ ปรับระบบใหม่: แยก “ปิดจอ” ออกจาก “สลับแอปจริง” ⭐] ---
 let isActuallyBlurred = false;
-let blurTime = 0;
-let hiddenTime = 0;
+let blurTimeout = null;
 
-window.addEventListener("blur", () => {
-  blurTime = Date.now();
-  isActuallyBlurred = true;
-
-  setTimeout(() => {
-    const diff = hiddenTime - blurTime;
-
-    if (diff >= 0 && diff < 800) {
-      console.log("💤 ปิดจอเฉย ๆ → ยัง Online");
-      isActuallyBlurred = false;
-      updateOnlineStatus("online");
-    } else {
-      if (document.hidden) {
-        console.log("🚫 ตรวจพบ: สลับไปแอปอื่น (Away)");
-        updateOnlineStatus("away");
-      }
-    }
-  }, 1500);
+window.addEventListener('blur', () => {
+    blurTimeout = setTimeout(() => {
+        if (!document.hidden && !isBreakMode && gameInterval && !hasFailedPeriod) {
+            isActuallyBlurred = true;
+            isSleeping = true;
+            tabSwitchCount++;
+            updateImage();
+            updateOnlineStatus("away");
+            console.log("🚫 สลับแอป: แจ้งแอดมินว่า Away");
+        }
+    }, 1500);
 });
 
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    hiddenTime = Date.now();
-    localStorage.setItem("lastExitTime", hiddenTime.toString());
-    console.log("📴 visibilitychange → หน้าจอถูกซ่อน");
-  } else {
-    hiddenTime = 0;
+window.addEventListener('focus', () => {
+    clearTimeout(blurTimeout);
     isActuallyBlurred = false;
+    isSleeping = false;
     handleBackgroundTime();
+    updateImage();
     updateOnlineStatus("online");
-    console.log("✅ กลับเข้าหน้าเว็บ: Online");
-  }
+    console.log("✅ กลับเข้าหน้าเว็บ: แจ้งแอดมินว่า Online");
 });
 
-window.addEventListener("focus", () => {
-  isActuallyBlurred = false;
-  updateOnlineStatus("online");
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        clearTimeout(blurTimeout);
+        isActuallyBlurred = false;
+        localStorage.setItem("lastExitTime", Date.now().toString());
+        console.log("💤 จอดับ: คงสถานะ online ไว้ใน Firebase");
+        updateOnlineStatus("online");
+    } else {
+        handleBackgroundTime();
+        if (!isActuallyBlurred) {
+            isSleeping = false;
+            updateOnlineStatus("online");
+        }
+    }
 });
 
 function checkFocus() {
@@ -523,12 +521,12 @@ window.selectItem = (name, price, imgSrc, type) => {
     const confirmBtn = document.getElementById('confirm-buy-btn');
     if (previewImg) previewImg.src = imgSrc;
     if (previewName) previewName.innerText = `${name} (${price === 0 ? 'ฟรี' : price + ' 💎'})`;
-    
+
     confirmBtn.onclick = async () => {
         if (score >= price) {
             if (price > 0 && !confirm(`ใช้ ${price} แต้มเพื่อเลือก ${name}?`)) return;
             score -= price;
-            const fileName = imgSrc.split('/').pop(); 
+            const fileName = imgSrc.split('/').pop();
             if (type === 'skin') currentSkin = fileName; else currentBG = fileName;
             await saveUserData();
             updatePointsUI();
@@ -536,9 +534,9 @@ window.selectItem = (name, price, imgSrc, type) => {
             playSound('confirm');
             alert("อัปเดตเรียบร้อย!");
             window.closeShop();
-        } else { 
+        } else {
             playSound('denied');
-            alert("แต้มไม่พอ!"); 
+            alert("แต้มไม่พอ!");
         }
     };
 };
@@ -547,10 +545,10 @@ window.processRedeem = async (cost) => {
     playSound('tap');
     if (score >= cost) {
         if(!confirm(`ต้องการใช้ ${cost} แต้ม เพื่อแลกรางวัลใช่หรือไม่?`)) return;
-        score -= cost; 
+        score -= cost;
         try {
             await saveUserData();
-            updatePointsUI(); 
+            updatePointsUI();
             playSound('confirm');
             alert(`แลกรางวัลสำเร็จ! หักไป ${cost} แต้ม (คงเหลือ ${score} แต้ม)`);
         } catch (error) {
