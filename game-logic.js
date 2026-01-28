@@ -54,11 +54,14 @@ let tabSwitchCount = 0;
 let totalFocusSeconds = 0;
 let gameInterval = null;
 
-// ✨ [อัปเดตสถานะแบบเร่งด่วนเพื่อรองรับมือถือพับจอ] ✨
+// --- [⭐ ตัวแปรสำหรับ Logic แยกแยะจอดับ ⭐] ---
+let loopCheck;
+let isAppSwitching = false; // ตัวแปรตัดสินว่า "จงใจไปแอปอื่น" หรือไม่
+
+// ✨ [อัปเดตสถานะแอดมิน] ✨
 function updateOnlineStatus(status) {
     if (!userId) return;
     const userRef = doc(db, "students", userId);
-    // ไม่ใช้ await ในจุดที่ต้องการความเร็วสูงสุด (เช่นตอนพับจอ)
     updateDoc(userRef, {
         status: status,
         lastSeen: Date.now()
@@ -75,12 +78,15 @@ function handleBackgroundTime() {
         const diffSeconds = Math.floor((currentTime - parseFloat(lastExit)) / 1000);
 
         if (diffSeconds > 0) {
-            timeLeft = Math.max(0, timeLeft - diffSeconds);
-
-            if (diffSeconds > 5) {
+            // ⭐ Logic สำคัญ: ถ้าเป็นการสลับแอป (isAppSwitching) ถึงจะหักพลังงาน
+            if (diffSeconds > 5 && isAppSwitching) {
                 const energyLost = diffSeconds * 1.5;
                 periodEnergy = Math.max(0, periodEnergy - energyLost);
-                console.log(`[Sync Success] หายไป ${diffSeconds} วินาที หักพลังงาน ${energyLost.toFixed(1)}`);
+                console.log(`[Focus Check] สลับแอปไป ${diffSeconds} วินาที หักพลังงาน ${energyLost.toFixed(1)}`);
+            } else {
+                // ถ้าแค่จอดับ ไม่หักพลังงาน แต่หักเวลาใน Timer ตามจริง
+                timeLeft = Math.max(0, timeLeft - diffSeconds);
+                console.log(`[Screen Wake] กลับมาจากจอดับ (${diffSeconds} วินาที) ไม่หักพลังงาน`);
             }
 
             updateUI();
@@ -274,7 +280,18 @@ export async function initGame() {
     });
 
     showScreen('lobby-screen');
-    requestAnimationFrame(checkFocus);
+    startLoopCheck();
+}
+
+// ✨ [⭐ หัวใจสำคัญ: ระบบ Loop ตรวจสอบสถานะการทำงานของเว็บ ⭐] ✨
+function startLoopCheck() {
+    const check = () => {
+        if (!document.hidden) {
+            localStorage.setItem("lastActiveTick", Date.now().toString());
+            loopCheck = requestAnimationFrame(check);
+        }
+    };
+    loopCheck = requestAnimationFrame(check);
 }
 
 function startGameLoop() {
@@ -303,47 +320,51 @@ function startGameLoop() {
     }, 1000);
 }
 
-// --- [⭐ ส่วนที่แก้ไขเพื่อให้สถานะแอดมินเปลี่ยนทันทีและแม่นยำ ⭐] ---
+// --- [⭐ ส่วนการจัดการ Visibility และ Blur/Focus ⭐] ---
+
+// เมื่อมีการกดพับแอป หรือเปลี่ยน Tab
 window.addEventListener('blur', () => {
-    // 1. ส่งสถานะ Away ไป Firebase ทันที (ไม่ใช้ await เพื่อให้คำสั่งยิงออกไปก่อนแอพค้าง)
+    // ถ้าหายไปในขณะที่ไม่ได้เป็นช่วงพัก = ตั้งใจไปแอปอื่น
     if (!isBreakMode && gameInterval && !hasFailedPeriod) {
-        updateOnlineStatus("away");
-        
+        isAppSwitching = true; 
         isSleeping = true; 
         tabSwitchCount++;
-        localStorage.setItem("lastExitTime", Date.now().toString());
-        
+        updateOnlineStatus("away");
         updateImage();
-        saveUserData(); // บันทึกข้อมูลสถิติควบคู่ไปด้วย
-        console.log("🚀 บังคับส่ง Away ทันที (Blur)");
+        saveUserData();
+        console.log("🚫 สถานะ: สลับแอป (Away)");
     }
 });
 
 window.addEventListener('focus', () => {
+    isAppSwitching = false; // รีเซ็ตสถานะสลับแอป
     isSleeping = false;
-    handleBackgroundTime(); // คำนวณพลังงานที่ควรจะเสียไประหว่างพับจอ
+    handleBackgroundTime(); 
     updateImage();
     updateOnlineStatus("online");
     saveUserData();
-    console.log("🚀 บังคับส่ง Online ทันที (Focus)");
 });
 
 document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-        // กรณีล็อคหน้าจอ (Visibility Hidden) ให้บันทึกเวลาไว้แต่คงสถานะ Online (ถ้าต้องการให้แอดมินเห็นว่ายังอยู่)
         localStorage.setItem("lastExitTime", Date.now().toString());
-        // ถ้าต้องการให้ล็อคจอแล้ว Away ด้วย ให้แก้เป็น updateOnlineStatus("away")
-        updateOnlineStatus("online"); 
+        
+        // เช็คดีเลย์สั้นๆ: ถ้าจอดับเอง สัญญาณ Blur จะไม่ทำงานทันทีเหมือนการสลับแอป
+        setTimeout(() => {
+            if (!isAppSwitching) {
+                // ถ้า isAppSwitching ยังเป็น false แสดงว่าแค่จอดับ
+                updateOnlineStatus("online"); 
+                console.log("😴 สถานะ: จอดับ/ล็อคจอ (Online)");
+            }
+        }, 150);
     } else {
+        cancelAnimationFrame(loopCheck);
         isSleeping = false;
         handleBackgroundTime();
         updateOnlineStatus("online");
+        startLoopCheck();
     }
 });
-
-function checkFocus() {
-    requestAnimationFrame(checkFocus);
-}
 
 async function handleEnergyDepleted() {
     if (!hasFailedPeriod && !isBreakMode) {
